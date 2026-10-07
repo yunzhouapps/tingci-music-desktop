@@ -6,7 +6,7 @@ import playIcon from "../assets/icons/bofang1.svg";
 import nextIcon from "../assets/icons/yinpin.svg";
 
 const props = defineProps({
-  activeSource: { type: Object, default: () => ({ id: "builtin-lx", name: "独家音源" }) },
+  activeSource: { type: Object, default: () => ({ id: "", name: "暂无音源" }) },
   sources: { type: Array, default: () => [] },
   platforms: { type: Array, default: () => [] },
   preferredQuality: { type: String, default: "320k" },
@@ -129,7 +129,7 @@ function normalizePlaylist(item) {
 }
 
 function sourceKey() {
-  return sourceOverrideId || props.activeSource?.id || "builtin-lx";
+  return sourceOverrideId || props.activeSource?.id || "";
 }
 
 function cacheKey(query = keyword.value.trim()) {

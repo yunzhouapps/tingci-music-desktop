@@ -13,7 +13,7 @@ export const THEMES = [
     name: "经典蓝",
     accent: "#5b7cff",
     accent2: "#795eff",
-    iconFilter: "none",
+    iconFilter: "hue-rotate(-103deg) saturate(1.05)",
   },
   {
     id: "sky",

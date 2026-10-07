@@ -17,13 +17,12 @@ import {
   emptyGlobalShortcuts,
   normalizeShortcuts,
 } from "./lib/shortcuts";
-import lxSourceScript from "./music-source/lx_latest.js?raw";
-import sixyinSourceScript from "./music-source/sixyin_latest.js?raw";
-
 const STORAGE_KEY = "tingci-music-state-v1";
 const ALLOWED_PLAY_MODES = ["sequence", "random", "repeat"];
-const PAGE_WIDTH = 520; // "设置""云库"等追加功能页的宽度
-const CLOUD_MIN_WIDTH = 360; // 云库面板最小宽度
+const PAGE_WIDTH = 520; // 云库打开时的初始宽度
+const MIN_WINDOW_WIDTH = 320; // 窗口最小宽度
+const MIN_PLAYER_WIDTH = 320; // 仅限制内联拖拽时的播放页宽度
+const DEFAULT_WINDOW_WIDTH = 380;
 const FALLBACK_CLOUD_PLATFORMS = [
   { id: "netease", name: "网易" },
   { id: "tencent", name: "企鹅" },
@@ -41,10 +40,9 @@ const state = reactive({
     playMode: "sequence",
     lastPlayedSongId: null,
     windowBounds: null,
-    activeSourceId: "builtin-lx",
-    activeSourceName: "独家音源",
+    activeSourceId: "",
+    activeSourceName: "暂无音源",
     quality: "320k",
-    deletedSourceIds: [],
     theme: DEFAULT_THEME_ID,
     globalShortcutsEnabled: false,
     shortcuts: { ...DEFAULT_SHORTCUTS },
@@ -60,12 +58,14 @@ const state = reactive({
 });
 
 const defaults = reactive({ downloadDir: "", cacheDir: "" });
-const musicSources = ref([
-  { id: "builtin-lx", name: "独家音源", version: "6", builtin: true, script: lxSourceScript },
-  { id: "builtin-sixyin", name: "六音音源", version: "v1.2.1", builtin: true, script: sixyinSourceScript },
-]);
+const musicSources = ref([]);
 const collapsed = ref(false);
 const cloudOpen = ref(false);
+const windowWidth = ref(Math.max(0, Math.round(window.innerWidth) || DEFAULT_WINDOW_WIDTH));
+const playerWidth = ref(0);
+const cloudWidth = computed(() =>
+  cloudOpen.value ? Math.max(0, windowWidth.value - playerWidth.value) : 0,
+);
 const cloudPlatforms = ref([...FALLBACK_CLOUD_PLATFORMS]);
 const settingsOpen = ref(false);
 const deleteGroupTarget = ref(null);
@@ -81,9 +81,17 @@ let idSequence = 0;
 let lastWindowHeight = 0;
 let suppressResizeUncollapseUntil = 0;
 let changedHashes = false;
-const homeWidth = ref(0); // 主界面宽度（打开功能页时记录）
+const resizingPlayerWidth = ref(false);
+let savedPlayerWidth = 0;
+let restoreWindowWidth = 0;
+let windowWasMaximized = false;
+let resizeStartX = 0;
+let resizeStartWidth = 0;
 const appShellStyle = computed(() =>
-  cloudOpen.value && homeWidth.value ? { flex: `0 0 ${homeWidth.value}px` } : null,
+  cloudOpen.value && playerWidth.value ? { flex: `0 0 ${playerWidth.value}px` } : null,
+);
+const cloudPanelStyle = computed(() =>
+  cloudOpen.value ? { flex: `0 0 ${cloudWidth.value}px` } : null,
 );
 let autoSkipDepth = 0;
 const playNextQueue = ref({}); // "下一首播放"队列：按分组 id 分开维护
@@ -121,10 +129,9 @@ function defaultSettings() {
     playMode: "sequence",
     lastPlayedSongId: null,
     windowBounds: null,
-    activeSourceId: "builtin-lx",
-    activeSourceName: "独家音源",
+    activeSourceId: "",
+    activeSourceName: "暂无音源",
     quality: "320k",
-    deletedSourceIds: [],
     theme: DEFAULT_THEME_ID,
     globalShortcutsEnabled: false,
     shortcuts: { ...DEFAULT_SHORTCUTS },
@@ -214,11 +221,9 @@ function hydrateSavedState() {
   if (!ALLOWED_PLAY_MODES.includes(state.settings.playMode)) state.settings.playMode = "sequence";
   state.settings.volume = Math.min(1, Math.max(0, numberOr(state.settings.volume, 0.82)));
   state.settings.muted = Boolean(state.settings.muted);
-  if (!state.settings.activeSourceId) state.settings.activeSourceId = "builtin-lx";
-  if (!state.settings.activeSourceName) state.settings.activeSourceName = "独家音源";
+  if (!state.settings.activeSourceId) state.settings.activeSourceId = "";
+  if (!state.settings.activeSourceName) state.settings.activeSourceName = "暂无音源";
   if (!["128k", "320k", "flac", "flac24bit"].includes(state.settings.quality)) state.settings.quality = "320k";
-  if (!Array.isArray(state.settings.deletedSourceIds)) state.settings.deletedSourceIds = [];
-  state.settings.deletedSourceIds = state.settings.deletedSourceIds.map(String);
   state.settings.theme = themeById(state.settings.theme).id;
   state.settings.globalShortcutsEnabled = Boolean(state.settings.globalShortcutsEnabled);
   state.settings.shortcuts = normalizeShortcuts(state.settings.shortcuts, DEFAULT_SHORTCUTS);
@@ -346,25 +351,19 @@ async function initialize() {
 }
 
 async function refreshMusicSources() {
-  const hiddenSourceIds = new Set(state.settings.deletedSourceIds || []);
   try {
     const imported = await invoke("list_music_sources", {
       cacheDir: state.settings.cacheDir || defaults.cacheDir,
     });
-    musicSources.value = [
-      { id: "builtin-lx", name: "独家音源", version: "6", builtin: true, script: lxSourceScript },
-      { id: "builtin-sixyin", name: "六音音源", version: "v1.2.1", builtin: true, script: sixyinSourceScript },
-      ...(Array.isArray(imported) ? imported : []),
-    ].filter((source) => !hiddenSourceIds.has(source.id));
+    musicSources.value = Array.isArray(imported) ? imported : [];
     if (!musicSources.value.some((source) => source.id === state.settings.activeSourceId)) {
       state.settings.activeSourceId = musicSources.value[0]?.id || "";
       state.settings.activeSourceName = musicSources.value[0]?.name || "暂无音源";
     }
   } catch {
-    musicSources.value = [
-      { id: "builtin-lx", name: "独家音源", version: "6", builtin: true, script: lxSourceScript },
-      { id: "builtin-sixyin", name: "六音音源", version: "v1.2.1", builtin: true, script: sixyinSourceScript },
-    ].filter((source) => !hiddenSourceIds.has(source.id));
+    musicSources.value = [];
+    state.settings.activeSourceId = "";
+    state.settings.activeSourceName = "暂无音源";
   }
 }
 
@@ -1585,9 +1584,6 @@ async function saveSettings(draft) {
     if (draft.activeSourceId) state.settings.activeSourceId = draft.activeSourceId;
     if (draft.activeSourceName) state.settings.activeSourceName = draft.activeSourceName;
     state.settings.quality = ["128k", "320k", "flac", "flac24bit"].includes(draft.quality) ? draft.quality : "320k";
-    state.settings.deletedSourceIds = Array.isArray(draft.deletedSourceIds)
-      ? draft.deletedSourceIds.map(String)
-      : [];
     state.settings.theme = themeById(draft.theme).id;
     state.settings.globalShortcutsEnabled = Boolean(draft.globalShortcutsEnabled);
     state.settings.shortcuts = normalizeShortcuts(draft.shortcuts, DEFAULT_SHORTCUTS);
@@ -1621,18 +1617,8 @@ function playExistingCloudSong(cloudSong) {
   if (record) void playSong(record.id);
 }
 
-async function handleSourcesChanged(sources, deletedSourceIds) {
-  if (Array.isArray(deletedSourceIds)) {
-    state.settings.deletedSourceIds = deletedSourceIds.map(String);
-  }
-  const builtinScripts = {
-    "builtin-lx": lxSourceScript,
-    "builtin-sixyin": sixyinSourceScript,
-  };
-  musicSources.value = (Array.isArray(sources) ? sources : []).map((source) => ({
-    ...source,
-    script: source.script || builtinScripts[source.id] || "",
-  }));
+async function handleSourcesChanged(sources) {
+  musicSources.value = Array.isArray(sources) ? sources : [];
   if (!musicSources.value.some((source) => source.id === state.settings.activeSourceId)) {
     state.settings.activeSourceId = musicSources.value[0]?.id || "";
     state.settings.activeSourceName = musicSources.value[0]?.name || "暂无音源";
@@ -1641,34 +1627,133 @@ async function handleSourcesChanged(sources, deletedSourceIds) {
   schedulePersist();
 }
 
-// 云库作为窗口的追加页：打开时记录主界面宽度并把窗口加宽，关闭时还原。
-// 云库打开时窗口最小宽度 = 主界面宽度 + 云库最小宽度
-function minWindowWidth() {
-  return cloudOpen.value ? Math.max(320, homeWidth.value + CLOUD_MIN_WIDTH) : 320;
+function readWindowWidth() {
+  return Math.max(0, Math.round(window.innerWidth) || 0);
+}
+
+function fitPlayerWidthToWindow(value) {
+  return Math.min(windowWidth.value, Math.max(0, Math.round(value) || 0));
+}
+
+function updateWindowWidths(maximized) {
+  windowWidth.value = readWindowWidth();
+  if (cloudOpen.value) {
+    const desiredWidth = savedPlayerWidth || playerWidth.value || windowWidth.value;
+    playerWidth.value = fitPlayerWidthToWindow(desiredWidth);
+    return;
+  }
+  if (!maximized) {
+    savedPlayerWidth = windowWidth.value;
+    playerWidth.value = windowWidth.value;
+  }
+}
+
+function applyMaximizedWindowState() {
+  windowWasMaximized = true;
+  if (cloudOpen.value) {
+    const desiredWidth = savedPlayerWidth || playerWidth.value || windowWidth.value || DEFAULT_WINDOW_WIDTH;
+    playerWidth.value = fitPlayerWidthToWindow(desiredWidth);
+    savedPlayerWidth = playerWidth.value;
+    restoreWindowWidth = playerWidth.value + PAGE_WIDTH;
+  } else if (playerWidth.value) {
+    savedPlayerWidth = playerWidth.value;
+    restoreWindowWidth = savedPlayerWidth;
+    playerWidth.value = 0;
+  } else {
+    playerWidth.value = 0;
+  }
+}
+
+async function trackWindowWidth() {
+  const currentWindow = getCurrentWindow();
+  try {
+    const maximized = await currentWindow.isMaximized();
+    updateWindowWidths(maximized);
+    if (maximized) {
+      applyMaximizedWindowState();
+      return;
+    }
+
+    if (windowWasMaximized && restoreWindowWidth) {
+      const targetWidth = Math.max(0, Math.round(restoreWindowWidth));
+      restoreWindowWidth = 0;
+      windowWasMaximized = false;
+      windowWidth.value = targetWidth;
+      if (cloudOpen.value) {
+        const desiredWidth = savedPlayerWidth || playerWidth.value || DEFAULT_WINDOW_WIDTH;
+        playerWidth.value = Math.min(targetWidth, Math.max(0, desiredWidth));
+        if (Math.round(window.innerWidth) !== targetWidth) {
+          await currentWindow.setSize(new LogicalSize(targetWidth, window.innerHeight));
+        }
+      } else {
+        if (Math.round(window.innerWidth) !== targetWidth) {
+          await currentWindow.setSize(new LogicalSize(targetWidth, window.innerHeight));
+        }
+        savedPlayerWidth = playerWidth.value = targetWidth;
+      }
+      return;
+    }
+
+    windowWasMaximized = false;
+  } catch {
+    // 窗口状态不可用时保留当前宽度。
+  }
+}
+
+function startPlayerWidthResize(event) {
+  if (
+    !cloudOpen.value ||
+    !playerWidth.value ||
+    windowWidth.value < MIN_PLAYER_WIDTH ||
+    event.button !== 0
+  ) return;
+  event.preventDefault();
+  resizeStartX = event.clientX;
+  resizeStartWidth = playerWidth.value;
+  resizingPlayerWidth.value = true;
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", movePlayerWidthResize);
+  window.addEventListener("pointerup", stopPlayerWidthResize);
+  window.addEventListener("pointercancel", stopPlayerWidthResize);
+}
+
+function movePlayerWidthResize(event) {
+  if (windowWidth.value < MIN_PLAYER_WIDTH) return;
+  const requestedWidth = resizeStartWidth + event.clientX - resizeStartX;
+  const nextWidth = Math.min(windowWidth.value, Math.max(MIN_PLAYER_WIDTH, requestedWidth));
+  playerWidth.value = nextWidth;
+  savedPlayerWidth = nextWidth;
+  if (windowWasMaximized) restoreWindowWidth = nextWidth + PAGE_WIDTH;
+}
+
+function stopPlayerWidthResize() {
+  window.removeEventListener("pointermove", movePlayerWidthResize);
+  window.removeEventListener("pointerup", stopPlayerWidthResize);
+  window.removeEventListener("pointercancel", stopPlayerWidthResize);
+  resizingPlayerWidth.value = false;
 }
 
 async function syncWindowWidth() {
   const currentWindow = getCurrentWindow();
   try {
     if (await currentWindow.isMaximized()) {
-      if (!cloudOpen.value) homeWidth.value = 0;
+      updateWindowWidths(true);
+      applyMaximizedWindowState();
       return;
     }
+    if (!restoreWindowWidth) windowWasMaximized = false;
     if (cloudOpen.value) {
-      const minWidth = minWindowWidth();
-      const target = Math.max(minWidth, homeWidth.value + PAGE_WIDTH);
-      await currentWindow.setMinSize(new LogicalSize(minWidth, 520));
+      const target = Math.max(0, playerWidth.value + PAGE_WIDTH);
       await currentWindow.setSize(new LogicalSize(target, window.innerHeight));
+      windowWidth.value = target;
       return;
     }
-    const restore = homeWidth.value;
-    // 先放开最小宽度，否则缩不回主界面宽度
-    await currentWindow.setMinSize(new LogicalSize(320, 520));
+    const restore = playerWidth.value || savedPlayerWidth || readWindowWidth();
     if (restore) {
       await currentWindow.setSize(new LogicalSize(restore, window.innerHeight));
     }
-    // 窗口恢复后再解除主界面固定宽度，避免当前页被拉伸重排
-    homeWidth.value = 0;
+    windowWidth.value = restore;
+    savedPlayerWidth = playerWidth.value = restore;
   } catch {
     // 窗口 API 拒绝改尺寸时保持当前大小
   }
@@ -1676,8 +1761,15 @@ async function syncWindowWidth() {
 
 async function toggleCloud() {
   if (!cloudOpen.value) {
-    // 先把主界面宽度固定下来（CSS 先生效），再改变窗口尺寸，避免当前页抖动
-    if (!homeWidth.value) homeWidth.value = Math.max(320, Math.round(window.innerWidth) || 380);
+    const maximized = await getCurrentWindow().isMaximized().catch(() => false);
+    updateWindowWidths(maximized);
+    const desiredWidth = maximized
+      ? savedPlayerWidth || DEFAULT_WINDOW_WIDTH
+      : windowWidth.value;
+    playerWidth.value = maximized
+      ? fitPlayerWidthToWindow(desiredWidth)
+      : desiredWidth;
+    savedPlayerWidth = playerWidth.value;
     cloudOpen.value = true;
     settingsOpen.value = false;
   } else {
@@ -1716,7 +1808,7 @@ async function toggleCollapsed() {
     try {
       if (!(await currentWindow.isMaximized())) {
         suppressResizeUncollapseUntil = Date.now() + 250;
-        await currentWindow.setMinSize(new LogicalSize(minWindowWidth(), targetHeight));
+        await currentWindow.setMinSize(new LogicalSize(MIN_WINDOW_WIDTH, targetHeight));
         await currentWindow.setSize(new LogicalSize(window.innerWidth, targetHeight));
       }
     } catch {
@@ -1728,7 +1820,7 @@ async function toggleCollapsed() {
   collapsed.value = false;
   await nextTick();
   try {
-    await currentWindow.setMinSize(new LogicalSize(minWindowWidth(), 520));
+    await currentWindow.setMinSize(new LogicalSize(MIN_WINDOW_WIDTH, 520));
     if (expandedWindowHeight.value && !(await currentWindow.isMaximized())) {
       await currentWindow.setSize(new LogicalSize(window.innerWidth, expandedWindowHeight.value));
     }
@@ -1738,11 +1830,16 @@ async function toggleCollapsed() {
 }
 
 function onWindowResize() {
+  windowWidth.value = readWindowWidth();
+  if (cloudOpen.value) {
+    playerWidth.value = Math.min(playerWidth.value, windowWidth.value);
+  }
+  void trackWindowWidth();
   const heightChanged = window.innerHeight !== lastWindowHeight;
   lastWindowHeight = window.innerHeight;
   if (Date.now() < suppressResizeUncollapseUntil || !heightChanged || !collapsed.value) return;
   collapsed.value = false;
-  void getCurrentWindow().setMinSize(new LogicalSize(minWindowWidth(), 520));
+  void getCurrentWindow().setMinSize(new LogicalSize(MIN_WINDOW_WIDTH, 520));
 }
 
 function handleBeforeUnload() {
@@ -1754,12 +1851,14 @@ function handleBeforeUnload() {
 onMounted(() => {
   void initialize();
   lastWindowHeight = window.innerHeight;
+  void trackWindowWidth();
   window.addEventListener("resize", onWindowResize);
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", onAppKeydown);
 });
 
 onBeforeUnmount(() => {
+  stopPlayerWidthResize();
   window.removeEventListener("resize", onWindowResize);
   window.removeEventListener("beforeunload", handleBeforeUnload);
   window.removeEventListener("keydown", onAppKeydown);
@@ -1833,10 +1932,20 @@ watch(
       </div>
       </div>
       </main>
+      <div
+        v-if="cloudOpen"
+        class="page-resizer"
+        :class="{ active: resizingPlayerWidth }"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整播放页宽度"
+        @pointerdown.prevent="startPlayerWidthResize"
+      />
     </div>
 
     <CloudPanel
       v-show="cloudOpen"
+      :style="cloudPanelStyle"
       :sources="musicSources"
       :active-source="{ id: state.settings.activeSourceId, name: state.settings.activeSourceName }"
       :platforms="cloudPlatforms"
@@ -1900,6 +2009,7 @@ watch(
 }
 
 .app-shell {
+  position: relative;
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
@@ -1907,6 +2017,26 @@ watch(
   flex-direction: column;
   overflow: hidden;
   background: var(--canvas);
+}
+
+.page-resizer {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: var(--line);
+  opacity: 0.72;
+}
+
+.page-resizer:hover,
+.page-resizer.active {
+  background: var(--accent);
+  opacity: 1;
 }
 
 .app-shell.playlist-is-collapsed {

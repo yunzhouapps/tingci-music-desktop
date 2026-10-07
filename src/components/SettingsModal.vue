@@ -21,10 +21,9 @@ const emit = defineEmits(["close", "save", "sources-changed"]);
 const draft = reactive({
   downloadDir: "",
   cacheDir: "",
-  activeSourceId: "builtin-lx",
-  activeSourceName: "独家音源",
+  activeSourceId: "",
+  activeSourceName: "暂无音源",
   quality: "320k",
-  deletedSourceIds: [],
   theme: DEFAULT_THEME_ID,
   globalShortcutsEnabled: false,
   shortcuts: { ...DEFAULT_SHORTCUTS },
@@ -44,12 +43,9 @@ watch(
   (settings) => {
     draft.downloadDir = settings.downloadDir;
     draft.cacheDir = settings.cacheDir;
-    draft.activeSourceId = settings.activeSourceId || "builtin-lx";
-    draft.activeSourceName = settings.activeSourceName || "独家音源";
+    draft.activeSourceId = settings.activeSourceId || "";
+    draft.activeSourceName = settings.activeSourceName || "暂无音源";
     draft.quality = ["128k", "320k", "flac", "flac24bit"].includes(settings.quality) ? settings.quality : "320k";
-    draft.deletedSourceIds = Array.isArray(settings.deletedSourceIds)
-      ? settings.deletedSourceIds.map(String)
-      : [];
     draft.theme = themeById(settings.theme).id;
     draft.globalShortcutsEnabled = Boolean(settings.globalShortcutsEnabled);
     draft.shortcuts = normalizeShortcuts(settings.shortcuts, DEFAULT_SHORTCUTS);
@@ -102,7 +98,6 @@ function save() {
     activeSourceId: draft.activeSourceId,
     activeSourceName: draft.activeSourceName,
     quality: draft.quality,
-    deletedSourceIds: draft.deletedSourceIds,
     theme: draft.theme,
     globalShortcutsEnabled: draft.globalShortcutsEnabled,
     shortcuts: { ...draft.shortcuts },
@@ -123,17 +118,12 @@ async function refreshSources() {
     const imported = await invoke("list_music_sources", {
       cacheDir: draft.cacheDir || props.defaults.cacheDir,
     });
-    const hiddenSourceIds = new Set(draft.deletedSourceIds);
-    sources.value = [
-      { id: "builtin-lx", name: "独家音源", version: "6", builtin: true },
-      { id: "builtin-sixyin", name: "六音音源", version: "v1.2.1", builtin: true },
-      ...(Array.isArray(imported) ? imported : []),
-    ].filter((source) => !hiddenSourceIds.has(source.id));
+    sources.value = Array.isArray(imported) ? imported : [];
     if (!sources.value.some((source) => source.id === draft.activeSourceId)) {
       draft.activeSourceId = sources.value[0]?.id || "";
       draft.activeSourceName = sources.value[0]?.name || "暂无音源";
     }
-    emit("sources-changed", sources.value, draft.deletedSourceIds);
+    emit("sources-changed", sources.value);
   } catch (error) {
     message.value = `读取音源失败：${error}`;
   } finally {
@@ -182,14 +172,10 @@ async function deleteSource(source) {
   if (!source) return;
   message.value = "";
   try {
-    if (source.builtin) {
-      draft.deletedSourceIds = [...new Set([...draft.deletedSourceIds, source.id])];
-    } else {
-      await invoke("delete_music_source", {
-        sourcePath: source.path,
-        cacheDir: draft.cacheDir || props.defaults.cacheDir,
-      });
-    }
+    await invoke("delete_music_source", {
+      sourcePath: source.path,
+      cacheDir: draft.cacheDir || props.defaults.cacheDir,
+    });
     await refreshSources();
   } catch (error) {
     message.value = `删除音源失败：${error}`;
@@ -447,7 +433,7 @@ onMounted(refreshSources);
             >
               <div class="source-copy">
                 <span>{{ source.name }}</span>
-                <small>{{ source.version || "未知版本" }}{{ source.builtin ? " · 内置" : "" }}{{ source.source_url ? " · URL" : "" }}</small>
+                <small>{{ source.version || "未知版本" }}{{ source.source_url ? " · URL" : "" }}</small>
               </div>
               <button
                 v-if="source.source_url"
@@ -471,14 +457,14 @@ onMounted(refreshSources);
           设置会保存到本地，重启后继续生效；目录不存在时会自动创建。
         </div>
         <div class="settings-note">
-            Email: yunzhouapps@proton.me
+            https://github.com/yunzhouapps/tingci-music-desktop
         </div>
         <div class="settings-note">R.M.W.S.</div>
         <div v-if="message" class="settings-message">{{ message }}</div>
       </div>
 
       <footer class="modal-footer">
-        <span class="settings-version">v1.0.0</span>
+        <span class="settings-version">v1.0.1</span>
         <button class="secondary-button" type="button" @click="emit('close')">取消</button>
         <button class="primary-button" type="button" @click="save">保存设置</button>
       </footer>

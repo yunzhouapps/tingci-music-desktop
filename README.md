@@ -19,5 +19,5 @@
 禁止商用牟利。
 
 ## 界面
-![ui](docs/readme/1.PNG)\
-![ui](docs/readme/2.PNG)![ui](docs/readme/3.PNG)
+![ui](docs/readme/11.png)\
+![ui](docs/readme/22.png)![ui](docs/readme/33.png)
